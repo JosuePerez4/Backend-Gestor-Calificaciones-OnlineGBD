@@ -34,6 +34,16 @@ public class JwtService {
     public String generateToken(UserDetails userDetails) {
         return createToken(new HashMap<>(), userDetails.getUsername());
     }
+    
+    public String generateTokenFromUserDetails(UserDetails userDetails) {
+        // Extract the user ID from CustomUserDetails
+        if (userDetails instanceof gestor.calificaciones.gestorcalificaciones.security.User.CustomUserDetails) {
+            gestor.calificaciones.gestorcalificaciones.security.User.CustomUserDetails customUserDetails = 
+                (gestor.calificaciones.gestorcalificaciones.security.User.CustomUserDetails) userDetails;
+            return createToken(new HashMap<>(), customUserDetails.getId().toString());
+        }
+        return createToken(new HashMap<>(), userDetails.getUsername());
+    }
 
     private String createToken(Map<String, Object> claims, String subject) {
         // Token válido por 1 hora

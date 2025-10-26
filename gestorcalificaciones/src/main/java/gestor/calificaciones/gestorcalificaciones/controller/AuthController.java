@@ -14,7 +14,7 @@ import gestor.calificaciones.gestorcalificaciones.DTO.User.RegisterRequest;
 import gestor.calificaciones.gestorcalificaciones.service.AuthSerice;
 
 @RestController
-@RequestMapping("/api/auth")
+@RequestMapping("/api/auth") 
 public class AuthController {
      @Autowired
     private AuthSerice authService;

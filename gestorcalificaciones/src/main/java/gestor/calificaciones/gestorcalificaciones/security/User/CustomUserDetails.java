@@ -38,7 +38,7 @@ public class CustomUserDetails implements UserDetails {
 
     @Override
     public String getUsername() {
-        return user.getEmail(); // make sure User has this field
+        return user.getId().toString(); // Return user ID instead of email
     }
 
     public User getUser() {

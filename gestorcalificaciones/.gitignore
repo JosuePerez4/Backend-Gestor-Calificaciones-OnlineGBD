@@ -30,7 +30,7 @@ build/
 !**/src/test/**/build/
 
 ### VS Code ###
-.vscode/
+.vscode
 
 ## Application properties files ###
 gestorcalificaciones\src\main\resources\application.properties
