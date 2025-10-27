@@ -62,8 +62,9 @@ public class CourseStatisticsService {
                 .filter(grade -> grade.getStatus() == GradeStatus.NOT_SUBMITTED)
                 .count();
         
+        // Calcular promedio de TODAS las calificaciones con score (tanto CORRECT como INCORRECT)
         double averageScore = allGrades.stream()
-                .filter(grade -> grade.getStatus() == GradeStatus.CORRECT && grade.getScore() != null)
+                .filter(grade -> grade.getScore() != null) // Incluir todas las calificaciones con score
                 .mapToInt(StudentGrade::getScore)
                 .average()
                 .orElse(0.0);
@@ -129,8 +130,9 @@ public class CourseStatisticsService {
                 .filter(grade -> grade.getStatus() == GradeStatus.NOT_SUBMITTED)
                 .count();
         
+        // Calcular promedio de TODAS las calificaciones con score (tanto CORRECT como INCORRECT)
         double averageScore = exerciseGrades.stream()
-                .filter(grade -> grade.getStatus() == GradeStatus.CORRECT && grade.getScore() != null)
+                .filter(grade -> grade.getScore() != null) // Incluir todas las calificaciones con score
                 .mapToInt(StudentGrade::getScore)
                 .average()
                 .orElse(0.0);
@@ -164,8 +166,9 @@ public class CourseStatisticsService {
                 .filter(grade -> grade.getStatus() == GradeStatus.NOT_SUBMITTED)
                 .count();
         
+        // Calcular promedio de TODAS las calificaciones con score (tanto CORRECT como INCORRECT)
         double averageScore = studentGrades.stream()
-                .filter(grade -> grade.getStatus() == GradeStatus.CORRECT && grade.getScore() != null)
+                .filter(grade -> grade.getScore() != null) // Incluir todas las calificaciones con score
                 .mapToInt(StudentGrade::getScore)
                 .average()
                 .orElse(0.0);

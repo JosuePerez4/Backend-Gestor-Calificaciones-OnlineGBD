@@ -1,6 +1,8 @@
 package gestor.calificaciones.gestorcalificaciones.service;
 
 import com.opencsv.CSVReader;
+import com.opencsv.CSVReaderBuilder;
+import com.opencsv.CSVParserBuilder;
 import com.opencsv.exceptions.CsvException;
 import gestor.calificaciones.gestorcalificaciones.DTO.CSV.CsvUploadRequest;
 import gestor.calificaciones.gestorcalificaciones.DTO.CSV.CsvUploadResponse;
@@ -20,6 +22,7 @@ import gestor.calificaciones.gestorcalificaciones.repository.StudentRepository;
 import gestor.calificaciones.gestorcalificaciones.repository.TeacherRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -41,6 +44,7 @@ public class CsvProcessingService {
     private final StudentGradeRepository studentGradeRepository;
     private final StudentCourseRepository studentCourseRepository;
     private final TeacherRepository teacherRepository;
+    private final PasswordEncoder passwordEncoder;
 
     @Transactional(rollbackFor = Exception.class)
     public CsvUploadResponse processCsvFile(MultipartFile file, CsvUploadRequest request, UUID teacherId) {
@@ -105,8 +109,20 @@ public class CsvProcessingService {
     }
 
     private List<String[]> readCsvFile(MultipartFile file) throws IOException, CsvException {
-        try (CSVReader reader = new CSVReader(new InputStreamReader(file.getInputStream()))) {
-            return reader.readAll();
+        CSVReader reader = new CSVReaderBuilder(new InputStreamReader(file.getInputStream(), "UTF-8"))
+                .withSkipLines(0)
+                .withCSVParser(new CSVParserBuilder().withSeparator(';').build())
+                .build();
+        
+        try {
+            List<String[]> rows = reader.readAll();
+            log.info("Total de filas leídas del CSV: {}", rows.size());
+            if (!rows.isEmpty()) {
+                log.info("Número de columnas en header: {}", rows.get(0).length);
+            }
+            return rows;
+        } finally {
+            reader.close();
         }
     }
 
@@ -114,22 +130,36 @@ public class CsvProcessingService {
         return Arrays.stream(header)
                 .skip(1) // Saltar la primera columna (Student Name)
                 .filter(name -> !name.trim().isEmpty())
+                .map(name -> name.trim().replaceAll("\\s+", " ")) // Limpiar espacios extra
                 .collect(Collectors.toList());
     }
 
     private List<StudentData> extractStudentsData(List<String[]> csvData) {
-        return csvData.stream()
+        List<StudentData> students = csvData.stream()
                 .skip(1) // Saltar el header
                 .filter(row -> row.length > 0 && !row[0].trim().isEmpty())
                 .map(this::createStudentData)
                 .collect(Collectors.toList());
+        
+        log.info("Total estudiantes extraídos: {}", students.size());
+        return students;
     }
 
     private StudentData createStudentData(String[] row) {
-        String studentName = row[0].trim();
+        if (row.length == 0) {
+            log.warn("Fila vacía encontrada");
+            return new StudentData("", new ArrayList<>());
+        }
+        
+        String studentName = row[0].trim().replaceAll("\\s+", " ");
+        
         List<String> grades = Arrays.stream(row)
                 .skip(1)
+                .map(grade -> grade != null ? grade.trim() : "")
                 .collect(Collectors.toList());
+        
+        log.debug("Estudiante parseado: '{}' - Número de calificaciones: {}", studentName, grades.size());
+        
         return new StudentData(studentName, grades);
     }
 
@@ -180,14 +210,22 @@ public class CsvProcessingService {
                 exercise.setMaxScore(100);
                 exercise.setCourse(course);
                 exercise.setIsActive(true);
-                exercises.add(exerciseRepository.save(exercise));
+                Exercise saved = exerciseRepository.save(exercise);
+                exercises.add(saved);
             }
         }
         
+        log.info("Total ejercicios procesados: {}", exercises.size());
         return exercises;
     }
 
     private void processStudentGrades(List<StudentData> studentsData, List<Exercise> exercises, Course course) {
+        log.info("Procesando calificaciones de {} estudiantes con {} ejercicios", 
+                studentsData.size(), exercises.size());
+        
+        // Primero, crear/obtener todos los estudiantes de una vez
+        List<StudentGrade> gradesToSave = new ArrayList<>();
+        
         for (StudentData studentData : studentsData) {
             // Obtener o crear estudiante
             Student student = getOrCreateStudent(studentData.getName());
@@ -200,29 +238,52 @@ public class CsvProcessingService {
                 String gradeValue = studentData.getGrades().get(i);
                 Exercise exercise = exercises.get(i);
                 
-                processStudentGrade(student, exercise, gradeValue);
+                StudentGrade grade = processStudentGradeForBatch(student, exercise, gradeValue);
+                if (grade != null) {
+                    gradesToSave.add(grade);
+                }
             }
         }
+        
+        // Guardar todas las calificaciones en batch
+        if (!gradesToSave.isEmpty()) {
+            log.info("Guardando {} calificaciones en batch", gradesToSave.size());
+            studentGradeRepository.saveAll(gradesToSave);
+        }
+        
+        log.info("Procesamiento de calificaciones completado");
     }
 
     private Student getOrCreateStudent(String studentName) {
+        log.debug("Buscando/creando estudiante con nombre: [{}]", studentName);
+        
         // Buscar estudiante por nombre (en un caso real, usarías email o código único)
         List<Student> existingStudents = studentRepository.findAll().stream()
                 .filter(s -> s.getName().equalsIgnoreCase(studentName))
                 .collect(Collectors.toList());
         
         if (!existingStudents.isEmpty()) {
+            log.debug("Estudiante existente encontrado: {}", existingStudents.get(0).getName());
             return existingStudents.get(0);
         }
         
         // Crear nuevo estudiante
         Student student = new Student();
         student.setName(studentName);
-        student.setEmail(studentName.toLowerCase().replace(" ", ".") + "@estudiante.com");
-        student.setPassword("defaultPassword"); // En un caso real, generar password temporal
+        
+        // Generar email: convertir nombre a email válido
+        String email = studentName.toLowerCase()
+                .replaceAll("[^a-z0-9\\s]", "") // Eliminar caracteres especiales excepto espacios
+                .trim()
+                .replaceAll("\\s+", ".") // Reemplazar espacios con puntos
+                + "@estudiante.com";
+        
+        student.setEmail(email);
+        student.setPassword(passwordEncoder.encode("defaultPassword")); // Hasheando la contraseña
         student.setRole(gestor.calificaciones.gestorcalificaciones.enums.Role.STUDENT);
         student.setCode(UUID.randomUUID().toString().substring(0, 8));
         
+        log.debug("Creando nuevo estudiante: nombre={}, email={}", studentName, email);
         return studentRepository.save(student);
     }
 
@@ -236,12 +297,11 @@ public class CsvProcessingService {
         }
     }
 
-    private void processStudentGrade(Student student, Exercise exercise, String gradeValue) {
-        // Verificar si ya existe una calificación
-        Optional<StudentGrade> existingGrade = studentGradeRepository
-                .findByStudentIdAndExerciseId(student.getId(), exercise.getId());
+    private StudentGrade processStudentGradeForBatch(Student student, Exercise exercise, String gradeValue) {
+        log.debug("Procesando calificación: estudiante={}, ejercicio={}, valor={}", 
+                student.getName(), exercise.getName(), gradeValue);
         
-        StudentGrade studentGrade = existingGrade.orElse(new StudentGrade());
+        StudentGrade studentGrade = new StudentGrade();
         studentGrade.setStudent(student);
         studentGrade.setExercise(exercise);
         
@@ -251,15 +311,21 @@ public class CsvProcessingService {
         
         if (status == GradeStatus.CORRECT || status == GradeStatus.INCORRECT) {
             try {
-                int score = Integer.parseInt(gradeValue);
+                int score = Integer.parseInt(gradeValue.trim());
                 studentGrade.setScore(score);
                 studentGrade.setSubmittedAt(LocalDateTime.now());
+                log.debug("Calificación numérica preparada: {}", score);
             } catch (NumberFormatException e) {
                 log.warn("No se pudo parsear la calificación: {}", gradeValue);
             }
+        } else if (status == GradeStatus.NOT_SUBMITTED) {
+            // Si no está entregado, no se establece fecha ni score
+            studentGrade.setScore(null);
+            studentGrade.setSubmittedAt(null);
+            log.debug("Ejercicio no entregado");
         }
         
-        studentGradeRepository.save(studentGrade);
+        return studentGrade;
     }
 
     private GradeStatus determineGradeStatus(String gradeValue) {
