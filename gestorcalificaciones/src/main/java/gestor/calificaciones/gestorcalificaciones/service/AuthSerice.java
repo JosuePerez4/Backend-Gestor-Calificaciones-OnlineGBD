@@ -51,7 +51,7 @@ public class AuthSerice {
         } else if (request.getRole().equals("STUDENT")) {
             userExists = studentRepository.findByEmail(request.getEmail()).isPresent();
         }
-        
+
         if (userExists) {
             throw new UserAlreadyExistsException("User already exists");
         }
@@ -81,7 +81,8 @@ public class AuthSerice {
         }
     }
 
-    // This method is to allow the login of a user
+    // This method allows the login of a user and returns both the token and user
+    // details
     public LoginResponse login(LoginRequest request) {
         // Check if the user exists in either repository
         User user = null;
@@ -90,21 +91,30 @@ public class AuthSerice {
         } else if (studentRepository.findByEmail(request.getEmail()).isPresent()) {
             user = studentRepository.findByEmail(request.getEmail()).get();
         }
-        
+
         if (user == null) {
             throw new UsernameNotFoundException("El correo no está registrado");
         }
 
         try {
+            // Authenticate the user with email and password
             authenticationManager.authenticate(
                     new UsernamePasswordAuthenticationToken(request.getEmail(), request.getPassword()));
         } catch (BadCredentialsException e) {
             throw new BadCredentialsException("Contraseña incorrecta");
         }
 
-        // Generate a JWT token for the authenticated user
+        // Generate JWT token for the authenticated user
         UserDetails userDetails = userDetailsService.loadUserByUsername(request.getEmail());
         String token = jwtService.generateTokenFromUserDetails(userDetails);
-        return new LoginResponse(token);
+
+        // Create LoginResponse with token and user information
+        LoginResponse.User userResponse = new LoginResponse.User(
+                user.getId().toString(),
+                user.getName(),
+                user.getEmail(),
+                user.getRole().toString());
+
+        return new LoginResponse(token, userResponse); // Return token and user details
     }
 }
