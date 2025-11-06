@@ -2,11 +2,14 @@ package gestor.calificaciones.gestorcalificaciones.controller;
 
 import gestor.calificaciones.gestorcalificaciones.DTO.CSV.CsvUploadRequest;
 import gestor.calificaciones.gestorcalificaciones.DTO.CSV.CsvUploadResponse;
+import gestor.calificaciones.gestorcalificaciones.DTO.Course.CreateCourseRequest;
 import gestor.calificaciones.gestorcalificaciones.DTO.Course.CourseResponse;
 import gestor.calificaciones.gestorcalificaciones.DTO.Course.CourseStatisticsResponse;
+import gestor.calificaciones.gestorcalificaciones.entities.Course;
 import gestor.calificaciones.gestorcalificaciones.entities.User;
 import gestor.calificaciones.gestorcalificaciones.entities.Teacher;
 import gestor.calificaciones.gestorcalificaciones.enums.Role;
+import gestor.calificaciones.gestorcalificaciones.repository.CourseRepository;
 import gestor.calificaciones.gestorcalificaciones.repository.TeacherRepository;
 import gestor.calificaciones.gestorcalificaciones.service.CourseStatisticsService;
 import gestor.calificaciones.gestorcalificaciones.service.CsvProcessingService;
@@ -30,6 +33,7 @@ public class TeacherController {
     private final CsvProcessingService csvProcessingService;
     private final CourseStatisticsService courseStatisticsService;
     private final TeacherRepository teacherRepository;
+    private final CourseRepository courseRepository;
 
     @GetMapping("/test")
     public ResponseEntity<String> testEndpoint(Authentication authentication) {
@@ -148,6 +152,54 @@ public class TeacherController {
                     .success(false)
                     .build();
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
+        }
+    }
+
+    @PostMapping("/courses")
+    public ResponseEntity<?> createCourse(@RequestBody CreateCourseRequest request, Authentication authentication) {
+        try {
+            if (authentication == null || authentication.getName() == null) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("No autenticado");
+            }
+            
+            UUID teacherId = UUID.fromString(authentication.getName());
+            
+            // Validar campos requeridos
+            if (request.getName() == null || request.getName().trim().isEmpty()) {
+                return ResponseEntity.badRequest().body("El nombre del curso es obligatorio");
+            }
+            if (request.getCourseCode() == null || request.getCourseCode().trim().isEmpty()) {
+                return ResponseEntity.badRequest().body("El código del curso es obligatorio");
+            }
+            
+            // Verificar si el código ya existe
+            if (courseRepository.existsByCourseCode(request.getCourseCode())) {
+                return ResponseEntity.status(HttpStatus.CONFLICT).body("El código del curso ya existe");
+            }
+            
+            // Obtener el profesor
+            Teacher teacher = teacherRepository.findById(teacherId)
+                    .orElseThrow(() -> new RuntimeException("Profesor no encontrado"));
+            
+            // Crear el curso
+            Course course = new Course();
+            course.setName(request.getName());
+            course.setCourseCode(request.getCourseCode());
+            course.setDescription(request.getDescription() != null ? request.getDescription() : "");
+            course.setTeacher(teacher);
+            course.setIsActive(true);
+            
+            Course savedCourse = courseRepository.save(course);
+            
+            // Convertir a response
+            CourseResponse response = courseStatisticsService.getCourseDetails(savedCourse.getId());
+            return ResponseEntity.status(HttpStatus.CREATED).body(response);
+            
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body("Error en el formato del ID: " + e.getMessage());
+        } catch (RuntimeException e) {
+            log.error("Error creando curso: {}", e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Error al crear el curso: " + e.getMessage());
         }
     }
 

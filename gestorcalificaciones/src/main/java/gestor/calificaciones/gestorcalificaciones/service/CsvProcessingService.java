@@ -12,7 +12,6 @@ import gestor.calificaciones.gestorcalificaciones.entities.Student;
 import gestor.calificaciones.gestorcalificaciones.entities.StudentCourse;
 import gestor.calificaciones.gestorcalificaciones.entities.StudentGrade;
 import gestor.calificaciones.gestorcalificaciones.entities.Teacher;
-import gestor.calificaciones.gestorcalificaciones.entities.User;
 import gestor.calificaciones.gestorcalificaciones.enums.GradeStatus;
 import gestor.calificaciones.gestorcalificaciones.repository.CourseRepository;
 import gestor.calificaciones.gestorcalificaciones.repository.ExerciseRepository;
@@ -109,9 +108,23 @@ public class CsvProcessingService {
     }
 
     private List<String[]> readCsvFile(MultipartFile file) throws IOException, CsvException {
-        CSVReader reader = new CSVReaderBuilder(new InputStreamReader(file.getInputStream(), "UTF-8"))
+        // Leer el contenido completo del archivo en memoria para detectar el separador
+        // y luego poder leerlo múltiples veces si es necesario
+        byte[] fileBytes = file.getBytes();
+        
+        // Detectar el separador desde el contenido
+        char separator = detectSeparator(fileBytes);
+        log.info("Separador detectado: '{}'", separator);
+        
+        // Crear un nuevo InputStream desde los bytes
+        java.io.ByteArrayInputStream byteArrayInputStream = new java.io.ByteArrayInputStream(fileBytes);
+        
+        CSVReader reader = new CSVReaderBuilder(new InputStreamReader(byteArrayInputStream, "UTF-8"))
                 .withSkipLines(0)
-                .withCSVParser(new CSVParserBuilder().withSeparator(';').build())
+                .withCSVParser(new CSVParserBuilder()
+                        .withSeparator(separator)
+                        .withQuoteChar('"')  // Manejar valores con comillas
+                        .build())
                 .build();
         
         try {
@@ -125,12 +138,57 @@ public class CsvProcessingService {
             reader.close();
         }
     }
+    
+    private char detectSeparator(byte[] fileBytes) {
+        try {
+            // Convertir bytes a string para analizar
+            String sample = new String(fileBytes, 0, Math.min(fileBytes.length, 2048), "UTF-8");
+            
+            // Contar comas y punto y comas en la primera línea
+            int commaCount = 0;
+            int semicolonCount = 0;
+            
+            // Obtener solo la primera línea
+            int firstLineEnd = sample.indexOf('\n');
+            if (firstLineEnd > 0) {
+                sample = sample.substring(0, firstLineEnd);
+            } else if (firstLineEnd == -1 && sample.indexOf('\r') > 0) {
+                firstLineEnd = sample.indexOf('\r');
+                sample = sample.substring(0, firstLineEnd);
+            }
+            
+            for (char c : sample.toCharArray()) {
+                if (c == ',') commaCount++;
+                if (c == ';') semicolonCount++;
+            }
+            
+            // Si hay más punto y comas, usar punto y coma; si no, usar coma
+            char detected = (semicolonCount > commaCount) ? ';' : ',';
+            log.debug("Detectado separador: {} (comas: {}, punto y comas: {})", detected, commaCount, semicolonCount);
+            
+            return detected;
+        } catch (Exception e) {
+            log.warn("Error detectando separador, usando coma por defecto", e);
+            return ',';
+        }
+    }
 
     private List<String> extractExerciseNames(String[] header) {
         return Arrays.stream(header)
                 .skip(1) // Saltar la primera columna (Student Name)
-                .filter(name -> !name.trim().isEmpty())
-                .map(name -> name.trim().replaceAll("\\s+", " ")) // Limpiar espacios extra
+                .filter(name -> {
+                    String trimmed = name.trim();
+                    // Ignorar columna "Total Grade" si existe
+                    return !trimmed.isEmpty() && 
+                           !trimmed.equalsIgnoreCase("Total Grade") &&
+                           !trimmed.equalsIgnoreCase("\"Total Grade\"");
+                })
+                .map(name -> {
+                    // Remover comillas dobles si existen
+                    String cleaned = name.trim().replaceAll("^\"|\"$", "");
+                    // Limpiar espacios extra
+                    return cleaned.replaceAll("\\s+", " ");
+                })
                 .collect(Collectors.toList());
     }
 
@@ -151,12 +209,45 @@ public class CsvProcessingService {
             return new StudentData("", new ArrayList<>());
         }
         
-        String studentName = row[0].trim().replaceAll("\\s+", " ");
+        // Limpiar el nombre del estudiante
+        String studentName = row[0].trim()
+                .replaceAll("^\"|\"$", "") // Remover comillas dobles
+                .replaceAll("\\s+", " ") // Limpiar espacios extra
+                .trim();
         
-        List<String> grades = Arrays.stream(row)
-                .skip(1)
-                .map(grade -> grade != null ? grade.trim() : "")
-                .collect(Collectors.toList());
+        // Validar que el nombre no sea demasiado largo (máximo 255 caracteres)
+        if (studentName.length() > 255) {
+            log.warn("Nombre de estudiante demasiado largo ({} caracteres), truncando: {}", 
+                    studentName.length(), studentName);
+            studentName = studentName.substring(0, 255).trim();
+        }
+        
+        // Validar que el nombre no contenga datos de calificaciones (error de parsing)
+        // Si el nombre contiene números que parecen calificaciones, puede ser un error
+        if (studentName.length() > 100 && studentName.matches(".*\\d{2,3}.*\\d{2,3}.*")) {
+            log.warn("Nombre sospechoso de contener calificaciones: {}", studentName.substring(0, Math.min(100, studentName.length())));
+            // Intentar extraer solo el nombre antes de la primera coma múltiple o patrón extraño
+            String[] parts = studentName.split(",\\s*");
+            if (parts.length > 1 && parts[0].length() < 100) {
+                studentName = parts[0].trim();
+                log.info("Nombre corregido a: {}", studentName);
+            }
+        }
+        
+        // Obtener las calificaciones, ignorando "Total Grade" si está al final
+        List<String> grades = new ArrayList<>();
+        for (int i = 1; i < row.length; i++) {
+            String grade = row[i] != null ? row[i].trim() : "";
+            // Remover comillas dobles si existen
+            grade = grade.replaceAll("^\"|\"$", "");
+            
+            // Ignorar si es "Total Grade" o "NA"
+            if (!grade.equalsIgnoreCase("Total Grade") && 
+                !grade.equalsIgnoreCase("\"Total Grade\"") &&
+                !grade.equalsIgnoreCase("NA")) {
+                grades.add(grade);
+            }
+        }
         
         log.debug("Estudiante parseado: '{}' - Número de calificaciones: {}", studentName, grades.size());
         
@@ -223,12 +314,16 @@ public class CsvProcessingService {
         log.info("Procesando calificaciones de {} estudiantes con {} ejercicios", 
                 studentsData.size(), exercises.size());
         
+        // Obtener todos los estudiantes inscritos en el curso para buscar emails
+        List<StudentCourse> enrolledStudents = studentCourseRepository.findActiveByCourseId(course.getId());
+        log.info("Estudiantes ya inscritos en el curso: {}", enrolledStudents.size());
+        
         // Primero, crear/obtener todos los estudiantes de una vez
         List<StudentGrade> gradesToSave = new ArrayList<>();
         
         for (StudentData studentData : studentsData) {
-            // Obtener o crear estudiante
-            Student student = getOrCreateStudent(studentData.getName());
+            // Obtener o crear estudiante, buscando email en inscritos
+            Student student = getOrCreateStudent(studentData.getName(), course, enrolledStudents);
             
             // Vincular estudiante al curso si no está vinculado
             linkStudentToCourse(student, course);
@@ -254,12 +349,22 @@ public class CsvProcessingService {
         log.info("Procesamiento de calificaciones completado");
     }
 
-    private Student getOrCreateStudent(String studentName) {
+    private Student getOrCreateStudent(String studentName, Course course, List<StudentCourse> enrolledStudents) {
         log.debug("Buscando/creando estudiante con nombre: [{}]", studentName);
         
-        // Buscar estudiante por nombre (en un caso real, usarías email o código único)
+        // Limitar longitud del nombre a 255 caracteres y crear variable final
+        final String finalStudentName;
+        if (studentName.length() > 255) {
+            finalStudentName = studentName.substring(0, 255).trim();
+            log.warn("Nombre truncado a 255 caracteres");
+        } else {
+            finalStudentName = studentName;
+        }
+        
+        // 1. Buscar estudiante por nombre exacto (case-insensitive)
+        final String searchName = finalStudentName;
         List<Student> existingStudents = studentRepository.findAll().stream()
-                .filter(s -> s.getName().equalsIgnoreCase(studentName))
+                .filter(s -> s.getName().equalsIgnoreCase(searchName))
                 .collect(Collectors.toList());
         
         if (!existingStudents.isEmpty()) {
@@ -267,23 +372,61 @@ public class CsvProcessingService {
             return existingStudents.get(0);
         }
         
+        // 2. Buscar email del estudiante en los inscritos del curso
+        String email = null;
+        for (StudentCourse sc : enrolledStudents) {
+            Student enrolledStudent = sc.getStudent();
+            if (enrolledStudent.getName().equalsIgnoreCase(finalStudentName)) {
+                email = enrolledStudent.getEmail();
+                log.debug("Email encontrado en inscritos del curso: {}", email);
+                break;
+            }
+        }
+        
+        // 3. Si no se encontró email, generar uno válido
+        if (email == null || email.isEmpty()) {
+            // Generar email: convertir nombre a email válido
+            String baseEmail = finalStudentName.toLowerCase()
+                    .replaceAll("[^a-z0-9\\s]", "") // Eliminar caracteres especiales excepto espacios
+                    .trim()
+                    .replaceAll("\\s+", "."); // Reemplazar espacios con puntos
+            
+            // Limitar longitud del email a 255 caracteres (incluyendo @estudiante.com = 15 caracteres)
+            int maxLength = 240; // 255 - 15 para "@estudiante.com"
+            if (baseEmail.length() > maxLength) {
+                baseEmail = baseEmail.substring(0, maxLength);
+            }
+            
+            email = baseEmail + "@estudiante.com";
+            
+            // Verificar que el email no exista ya
+            int suffix = 1;
+            String baseEmailForSuffix = baseEmail;
+            while (studentRepository.findByEmail(email).isPresent()) {
+                String suffixStr = String.valueOf(suffix);
+                int maxWithSuffix = maxLength - suffixStr.length() - 1; // -1 para el punto
+                if (maxWithSuffix < 0) maxWithSuffix = 0;
+                baseEmailForSuffix = baseEmailForSuffix.substring(0, Math.min(baseEmailForSuffix.length(), maxWithSuffix));
+                email = baseEmailForSuffix + "." + suffixStr + "@estudiante.com";
+                suffix++;
+                if (suffix > 1000) { // Prevenir loop infinito
+                    email = UUID.randomUUID().toString().substring(0, 8) + "@estudiante.com";
+                    break;
+                }
+            }
+            
+            log.debug("Email generado: {}", email);
+        }
+        
         // Crear nuevo estudiante
         Student student = new Student();
-        student.setName(studentName);
-        
-        // Generar email: convertir nombre a email válido
-        String email = studentName.toLowerCase()
-                .replaceAll("[^a-z0-9\\s]", "") // Eliminar caracteres especiales excepto espacios
-                .trim()
-                .replaceAll("\\s+", ".") // Reemplazar espacios con puntos
-                + "@estudiante.com";
-        
+        student.setName(finalStudentName);
         student.setEmail(email);
         student.setPassword(passwordEncoder.encode("defaultPassword")); // Hasheando la contraseña
         student.setRole(gestor.calificaciones.gestorcalificaciones.enums.Role.STUDENT);
         student.setCode(UUID.randomUUID().toString().substring(0, 8));
         
-        log.debug("Creando nuevo estudiante: nombre={}, email={}", studentName, email);
+        log.debug("Creando nuevo estudiante: nombre={}, email={}", finalStudentName, email);
         return studentRepository.save(student);
     }
 
