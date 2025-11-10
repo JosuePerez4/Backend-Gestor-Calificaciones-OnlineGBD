@@ -26,6 +26,13 @@ public interface StudentGradeRepository extends JpaRepository<StudentGrade, UUID
     @Query("SELECT sg FROM StudentGrade sg WHERE sg.exercise.course.id = :courseId")
     List<StudentGrade> findByCourseId(@Param("courseId") UUID courseId);
     
+    // OPTIMIZADO: Usar fetch join para evitar problema N+1
+    @Query("SELECT sg FROM StudentGrade sg " +
+           "JOIN FETCH sg.exercise e " +
+           "JOIN FETCH sg.student s " +
+           "WHERE e.course.id = :courseId")
+    List<StudentGrade> findByCourseIdWithFetch(@Param("courseId") UUID courseId);
+    
     @Query("SELECT sg FROM StudentGrade sg WHERE sg.student.id = :studentId AND sg.status = :status")
     List<StudentGrade> findByStudentIdAndStatus(@Param("studentId") UUID studentId, @Param("status") GradeStatus status);
     
@@ -36,4 +43,12 @@ public interface StudentGradeRepository extends JpaRepository<StudentGrade, UUID
     
     @Query("SELECT AVG(sg.score) FROM StudentGrade sg WHERE sg.exercise.course.id = :courseId AND sg.status = 'CORRECT'")
     Double getAverageScoreByCourseId(@Param("courseId") UUID courseId);
+    
+    // Consultas optimizadas para contar ejercicios únicos
+    @Query("SELECT COUNT(DISTINCT sg.exercise.id) FROM StudentGrade sg WHERE sg.exercise.course.id = :courseId AND sg.status = :status")
+    Long countDistinctExercisesByCourseIdAndStatus(@Param("courseId") UUID courseId, @Param("status") GradeStatus status);
+    
+    // Consulta optimizada para obtener promedio de score
+    @Query("SELECT AVG(sg.score) FROM StudentGrade sg WHERE sg.exercise.course.id = :courseId AND sg.score IS NOT NULL")
+    Double getAverageScoreByCourseIdOptimized(@Param("courseId") UUID courseId);
 }

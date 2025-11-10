@@ -42,32 +42,36 @@ public class CourseStatisticsService {
         Course course = courseRepository.findById(courseId)
                 .orElseThrow(() -> new RuntimeException("Curso no encontrado"));
         
-        List<StudentGrade> allGrades = studentGradeRepository.findByCourseId(courseId);
         List<Exercise> exercises = exerciseRepository.findActiveExercisesByCourseId(courseId);
         List<StudentCourse> studentCourses = studentCourseRepository.findActiveByCourseId(courseId);
         
         // Calcular estadísticas generales
         int totalStudents = studentCourses.size();
         int totalExercises = exercises.size();
-        int correctSubmissions = (int) allGrades.stream()
-                .filter(grade -> grade.getStatus() == GradeStatus.CORRECT)
-                .count();
-        int incorrectSubmissions = (int) allGrades.stream()
-                .filter(grade -> grade.getStatus() == GradeStatus.INCORRECT)
-                .count();
-        int pendingSubmissions = (int) allGrades.stream()
-                .filter(grade -> grade.getStatus() == GradeStatus.PENDING)
-                .count();
-        int notSubmittedCount = (int) allGrades.stream()
-                .filter(grade -> grade.getStatus() == GradeStatus.NOT_SUBMITTED)
-                .count();
         
-        // Calcular promedio de TODAS las calificaciones con score (tanto CORRECT como INCORRECT)
-        double averageScore = allGrades.stream()
-                .filter(grade -> grade.getScore() != null) // Incluir todas las calificaciones con score
-                .mapToInt(StudentGrade::getScore)
-                .average()
-                .orElse(0.0);
+        // OPTIMIZADO: Contar ejercicios únicos con al menos una entrega correcta/incorrecta
+        // En lugar de contar todas las entregas, contamos cuántos ejercicios tienen al menos una entrega con ese status
+        int correctSubmissions = studentGradeRepository
+                .countDistinctExercisesByCourseIdAndStatus(courseId, GradeStatus.CORRECT)
+                .intValue();
+        int incorrectSubmissions = studentGradeRepository
+                .countDistinctExercisesByCourseIdAndStatus(courseId, GradeStatus.INCORRECT)
+                .intValue();
+        
+        // Para pending y not_submitted mantenemos el conteo total ya que son estados diferentes
+        int pendingSubmissions = studentGradeRepository
+                .countByCourseIdAndStatus(courseId, GradeStatus.PENDING)
+                .intValue();
+        int notSubmittedCount = studentGradeRepository
+                .countByCourseIdAndStatus(courseId, GradeStatus.NOT_SUBMITTED)
+                .intValue();
+        
+        // OPTIMIZADO: Calcular promedio usando consulta directa en BD
+        Double avgScore = studentGradeRepository.getAverageScoreByCourseIdOptimized(courseId);
+        double averageScore = avgScore != null ? avgScore : 0.0;
+        
+        // OPTIMIZADO: Cargar calificaciones con fetch join para evitar problema N+1
+        List<StudentGrade> allGrades = studentGradeRepository.findByCourseIdWithFetch(courseId);
         
         // Estadísticas por ejercicio
         List<ExerciseStatistics> exerciseStats = exercises.stream()
@@ -112,78 +116,75 @@ public class CourseStatisticsService {
     }
 
     private ExerciseStatistics calculateExerciseStatistics(Exercise exercise, List<StudentGrade> allGrades) {
-        List<StudentGrade> exerciseGrades = allGrades.stream()
-                .filter(grade -> grade.getExercise().getId().equals(exercise.getId()))
-                .collect(Collectors.toList());
+        // OPTIMIZADO: Filtrar una sola vez y calcular todas las estadísticas en una sola pasada
+        UUID exerciseId = exercise.getId();
+        int[] counts = new int[5]; // [total, correct, incorrect, pending, notSubmitted]
+        int[] scoreSum = new int[1];
+        int[] scoreCount = new int[1];
         
-        int totalSubmissions = exerciseGrades.size();
-        int correctSubmissions = (int) exerciseGrades.stream()
-                .filter(grade -> grade.getStatus() == GradeStatus.CORRECT)
-                .count();
-        int incorrectSubmissions = (int) exerciseGrades.stream()
-                .filter(grade -> grade.getStatus() == GradeStatus.INCORRECT)
-                .count();
-        int pendingSubmissions = (int) exerciseGrades.stream()
-                .filter(grade -> grade.getStatus() == GradeStatus.PENDING)
-                .count();
-        int notSubmittedCount = (int) exerciseGrades.stream()
-                .filter(grade -> grade.getStatus() == GradeStatus.NOT_SUBMITTED)
-                .count();
+        allGrades.stream()
+                .filter(grade -> grade.getExercise().getId().equals(exerciseId))
+                .forEach(grade -> {
+                    counts[0]++; // total
+                    switch (grade.getStatus()) {
+                        case CORRECT -> counts[1]++;
+                        case INCORRECT -> counts[2]++;
+                        case PENDING -> counts[3]++;
+                        case NOT_SUBMITTED -> counts[4]++;
+                    }
+                    if (grade.getScore() != null) {
+                        scoreSum[0] += grade.getScore();
+                        scoreCount[0]++;
+                    }
+                });
         
-        // Calcular promedio de TODAS las calificaciones con score (tanto CORRECT como INCORRECT)
-        double averageScore = exerciseGrades.stream()
-                .filter(grade -> grade.getScore() != null) // Incluir todas las calificaciones con score
-                .mapToInt(StudentGrade::getScore)
-                .average()
-                .orElse(0.0);
+        double averageScore = scoreCount[0] > 0 ? (double) scoreSum[0] / scoreCount[0] : 0.0;
         
         return new ExerciseStatistics(
                 exercise.getName(),
-                totalSubmissions,
-                correctSubmissions,
-                incorrectSubmissions,
-                pendingSubmissions,
-                notSubmittedCount,
+                counts[0], // totalSubmissions
+                counts[1], // correctSubmissions
+                counts[2], // incorrectSubmissions
+                counts[3], // pendingSubmissions
+                counts[4], // notSubmittedCount
                 averageScore
         );
     }
 
     private StudentPerformance calculateStudentPerformance(StudentCourse studentCourse, List<StudentGrade> allGrades, int totalExercises) {
-        List<StudentGrade> studentGrades = allGrades.stream()
-                .filter(grade -> grade.getStudent().getId().equals(studentCourse.getStudent().getId()))
-                .collect(Collectors.toList());
+        // OPTIMIZADO: Calcular todas las estadísticas en una sola pasada
+        UUID studentId = studentCourse.getStudent().getId();
+        int[] counts = new int[4]; // [correct, incorrect, pending, notSubmitted]
+        int[] scoreSum = new int[1];
+        int[] scoreCount = new int[1];
         
-        int correctCount = (int) studentGrades.stream()
-                .filter(grade -> grade.getStatus() == GradeStatus.CORRECT)
-                .count();
-        int incorrectCount = (int) studentGrades.stream()
-                .filter(grade -> grade.getStatus() == GradeStatus.INCORRECT)
-                .count();
-        int pendingCount = (int) studentGrades.stream()
-                .filter(grade -> grade.getStatus() == GradeStatus.PENDING)
-                .count();
-        int notSubmittedCount = (int) studentGrades.stream()
-                .filter(grade -> grade.getStatus() == GradeStatus.NOT_SUBMITTED)
-                .count();
+        allGrades.stream()
+                .filter(grade -> grade.getStudent().getId().equals(studentId))
+                .forEach(grade -> {
+                    switch (grade.getStatus()) {
+                        case CORRECT -> counts[0]++;
+                        case INCORRECT -> counts[1]++;
+                        case PENDING -> counts[2]++;
+                        case NOT_SUBMITTED -> counts[3]++;
+                    }
+                    if (grade.getScore() != null) {
+                        scoreSum[0] += grade.getScore();
+                        scoreCount[0]++;
+                    }
+                });
         
-        // Calcular promedio de TODAS las calificaciones con score (tanto CORRECT como INCORRECT)
-        double averageScore = studentGrades.stream()
-                .filter(grade -> grade.getScore() != null) // Incluir todas las calificaciones con score
-                .mapToInt(StudentGrade::getScore)
-                .average()
-                .orElse(0.0);
-        
+        double averageScore = scoreCount[0] > 0 ? (double) scoreSum[0] / scoreCount[0] : 0.0;
         double completionPercentage = totalExercises > 0 ? 
-                ((double) (correctCount + incorrectCount + pendingCount) / totalExercises) * 100 : 0.0;
+                ((double) (counts[0] + counts[1] + counts[2]) / totalExercises) * 100 : 0.0;
         
         return new StudentPerformance(
                 studentCourse.getStudent().getName(),
                 studentCourse.getStudent().getEmail(),
                 totalExercises,
-                correctCount,
-                incorrectCount,
-                pendingCount,
-                notSubmittedCount,
+                counts[0], // correctCount
+                counts[1], // incorrectCount
+                counts[2], // pendingCount
+                counts[3], // notSubmittedCount
                 averageScore,
                 completionPercentage
         );

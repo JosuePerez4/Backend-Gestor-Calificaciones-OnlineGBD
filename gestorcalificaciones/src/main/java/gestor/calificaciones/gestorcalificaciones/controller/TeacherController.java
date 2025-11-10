@@ -24,6 +24,16 @@ import org.springframework.web.multipart.MultipartFile;
 import java.util.List;
 import java.util.UUID;
 
+/**
+ * Controlador REST para operaciones relacionadas con profesores.
+ * 
+ * <p>Este controlador maneja todas las operaciones que un profesor
+ * puede realizar, incluyendo la carga de archivos CSV con calificaciones,
+ * la gestión de cursos y la consulta de estadísticas detalladas.</p>
+ * 
+ * @author Sistema de Gestión de Calificaciones
+ * @version 1.0
+ */
 @RestController
 @RequestMapping("/api/teacher")
 @RequiredArgsConstructor
@@ -35,59 +45,47 @@ public class TeacherController {
     private final TeacherRepository teacherRepository;
     private final CourseRepository courseRepository;
 
-    @GetMapping("/test")
-    public ResponseEntity<String> testEndpoint(Authentication authentication) {
-        if (authentication == null) {
-            return ResponseEntity.ok("No autenticado");
-        }
-        return ResponseEntity.ok("Autenticado como: " + authentication.getName() + " - Roles: " + authentication.getAuthorities());
-    }
-
-    @GetMapping("/debug-teacher")
-    public ResponseEntity<String> debugTeacher(Authentication authentication) {
-        if (authentication == null) {
-            return ResponseEntity.ok("No autenticado");
-        }
-        
-        try {
-            UUID teacherId = UUID.fromString(authentication.getName());
-            log.info("DEBUG: TeacherController - Verificando profesor con ID: {}", teacherId);
-            
-            var teacherOptional = teacherRepository.findById(teacherId);
-            if (teacherOptional.isPresent()) {
-                var teacher = teacherOptional.get();
-                return ResponseEntity.ok("Profesor encontrado: " + teacher.getName() + " - Email: " + teacher.getEmail());
-            } else {
-                return ResponseEntity.ok("Profesor NO encontrado con ID: " + teacherId);
-            }
-        } catch (Exception e) {
-            return ResponseEntity.ok("Error: " + e.getMessage());
-        }
-    }
-
-    @PostMapping("/migrate-to-teacher")
-    public ResponseEntity<String> migrateToTeacher(Authentication authentication) {
-        if (authentication == null) {
-            return ResponseEntity.ok("No autenticado");
-        }
-        
-        try {
-            UUID userId = UUID.fromString(authentication.getName());
-            log.info("DEBUG: TeacherController - Migrando usuario a Teacher con ID: {}", userId);
-            
-            // Verificar si ya es Teacher
-            var teacherOptional = teacherRepository.findById(userId);
-            if (teacherOptional.isPresent()) {
-                return ResponseEntity.ok("El usuario ya es Teacher: " + teacherOptional.get().getName());
-            }
-            
-            return ResponseEntity.ok("Migración no necesaria. El usuario ya es Teacher o no existe.");
-            
-        } catch (Exception e) {
-            return ResponseEntity.ok("Error en migración: " + e.getMessage());
-        }
-    }
-
+    /**
+     * Carga y procesa un archivo CSV con calificaciones de estudiantes.
+     * 
+     * <p>Este endpoint permite a un profesor cargar un archivo CSV que contiene
+     * las calificaciones de ejercicios de los estudiantes. El sistema procesa
+     * automáticamente el archivo, crea o actualiza el curso, y registra todas
+     * las calificaciones.</p>
+     * 
+     * <p><strong>Formato del CSV esperado:</strong></p>
+     * <ul>
+     *   <li>Primera fila: Encabezados (Student Name, Ejercicio 1, Ejercicio 2, ...)</li>
+     *   <li>Filas siguientes: Datos de estudiantes y sus calificaciones</li>
+     *   <li>Valores aceptados: Números (0-100), "Not Submitted", o vacío</li>
+     * </ul>
+     * 
+     * <p><strong>Clasificación automática:</strong></p>
+     * <ul>
+     *   <li>≥ 80 puntos: Correcto</li>
+     *   <li>1-79 puntos: Incorrecto</li>
+     *   <li>0 puntos: Incorrecto</li>
+     *   <li>"Not Submitted" o vacío: No enviado</li>
+     * </ul>
+     * 
+     * @param file Archivo CSV con las calificaciones (multipart/form-data)
+     * @param courseCode Código único del curso (ej: "PROG101")
+     * @param courseName Nombre del curso (ej: "Programación I")
+     * @param description Descripción opcional del curso
+     * @param authentication Información de autenticación del profesor
+     * @return Respuesta con el resultado del procesamiento del CSV
+     * 
+     * @throws IllegalArgumentException Si el formato del ID del profesor es inválido
+     * @throws RuntimeException Si ocurre un error al procesar el archivo CSV
+     * 
+     * @apiNote Requiere autenticación como TEACHER
+     * @apiNote Content-Type: multipart/form-data
+     * 
+     * @response 200 OK - Archivo procesado exitosamente
+     * @response 400 Bad Request - Archivo vacío o formato inválido
+     * @response 401 Unauthorized - No autenticado
+     * @response 500 Internal Server Error - Error al procesar el archivo
+     */
     @PostMapping("/upload-csv")
     public ResponseEntity<CsvUploadResponse> uploadCsv(
             @RequestParam("file") MultipartFile file,
@@ -155,6 +153,30 @@ public class TeacherController {
         }
     }
 
+    /**
+     * Crea un nuevo curso vacío.
+     * 
+     * <p>Permite a un profesor crear un curso manualmente sin necesidad de
+     * cargar un archivo CSV. El curso se crea sin ejercicios ni estudiantes,
+     * y puede ser poblado posteriormente mediante la carga de CSV o la
+     * creación manual de ejercicios.</p>
+     * 
+     * @param request Datos del curso a crear (nombre, código, descripción)
+     * @param authentication Información de autenticación del profesor
+     * @return Detalles del curso creado
+     * 
+     * @throws IllegalArgumentException Si el formato del ID es inválido
+     * @throws RuntimeException Si el profesor no existe o el código del curso ya existe
+     * 
+     * @apiNote Requiere autenticación como TEACHER
+     * @apiNote Content-Type: application/json
+     * 
+     * @response 201 Created - Curso creado exitosamente
+     * @response 400 Bad Request - Campos requeridos faltantes o inválidos
+     * @response 401 Unauthorized - No autenticado
+     * @response 409 Conflict - El código del curso ya existe
+     * @response 500 Internal Server Error - Error al crear el curso
+     */
     @PostMapping("/courses")
     public ResponseEntity<?> createCourse(@RequestBody CreateCourseRequest request, Authentication authentication) {
         try {
@@ -203,6 +225,22 @@ public class TeacherController {
         }
     }
 
+    /**
+     * Obtiene la lista de todos los cursos del profesor autenticado.
+     * 
+     * <p>Retorna todos los cursos activos asociados al profesor que realiza
+     * la petición, incluyendo información sobre el número de estudiantes
+     * y ejercicios en cada curso.</p>
+     * 
+     * @param authentication Información de autenticación del profesor
+     * @return Lista de cursos del profesor
+     * 
+     * @apiNote Requiere autenticación como TEACHER
+     * 
+     * @response 200 OK - Lista de cursos obtenida exitosamente
+     * @response 401 Unauthorized - No autenticado
+     * @response 500 Internal Server Error - Error al obtener los cursos
+     */
     @GetMapping("/courses")
     public ResponseEntity<List<CourseResponse>> getTeacherCourses(Authentication authentication) {
         try {
@@ -214,6 +252,24 @@ public class TeacherController {
         }
     }
 
+    /**
+     * Obtiene los detalles completos de un curso específico.
+     * 
+     * <p>Retorna información detallada de un curso incluyendo su nombre,
+     * código, descripción, profesor, fecha de creación, estado, y estadísticas
+     * como número total de estudiantes y ejercicios.</p>
+     * 
+     * @param courseId Identificador único del curso (UUID)
+     * @param authentication Información de autenticación del profesor
+     * @return Detalles completos del curso
+     * 
+     * @apiNote Requiere autenticación como TEACHER
+     * 
+     * @response 200 OK - Detalles del curso obtenidos exitosamente
+     * @response 401 Unauthorized - No autenticado
+     * @response 404 Not Found - Curso no encontrado
+     * @response 500 Internal Server Error - Error al obtener los detalles
+     */
     @GetMapping("/courses/{courseId}")
     public ResponseEntity<CourseResponse> getCourseDetails(@PathVariable UUID courseId, Authentication authentication) {
         try {
@@ -228,6 +284,34 @@ public class TeacherController {
         }
     }
 
+    /**
+     * Obtiene estadísticas detalladas de un curso.
+     * 
+     * <p>Retorna un análisis completo del rendimiento del curso incluyendo:</p>
+     * <ul>
+     *   <li>Estadísticas generales: total de estudiantes, ejercicios, entregas correctas/incorrectas</li>
+     *   <li>Estadísticas por ejercicio: rendimiento individual de cada ejercicio</li>
+     *   <li>Rendimiento por estudiante: calificaciones y porcentaje de completitud</li>
+     *   <li>Promedio general de calificaciones</li>
+     * </ul>
+     * 
+     * <p><strong>Nota sobre conteo de ejercicios:</strong></p>
+     * <ul>
+     *   <li>correctSubmissions: Número de ejercicios únicos con al menos una entrega correcta</li>
+     *   <li>incorrectSubmissions: Número de ejercicios únicos con al menos una entrega incorrecta</li>
+     * </ul>
+     * 
+     * @param courseId Identificador único del curso (UUID)
+     * @param authentication Información de autenticación del profesor
+     * @return Estadísticas completas del curso
+     * 
+     * @apiNote Requiere autenticación como TEACHER
+     * 
+     * @response 200 OK - Estadísticas obtenidas exitosamente
+     * @response 401 Unauthorized - No autenticado
+     * @response 404 Not Found - Curso no encontrado
+     * @response 500 Internal Server Error - Error al calcular las estadísticas
+     */
     @GetMapping("/courses/{courseId}/statistics")
     public ResponseEntity<CourseStatisticsResponse> getCourseStatistics(@PathVariable UUID courseId, Authentication authentication) {
         try {

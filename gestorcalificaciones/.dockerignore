@@ -1,0 +1,20 @@
+# Ignorar archivos y directorios innecesarios para Docker
+# Nota: No ignoramos src/, pom.xml, mvnw ni .mvn porque los necesitamos para compilar
+
+.git
+.gitignore
+*.md
+*.iml
+.idea
+.vscode
+*.log
+.DS_Store
+target/
+.dockerignore
+Dockerfile
+docker-build-and-push.sh
+README.md
+ARCHITECTURE.md
+API_EXAMPLES.md
+datos*.csv
+
